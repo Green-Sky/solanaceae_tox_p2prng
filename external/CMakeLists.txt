@@ -26,6 +26,24 @@ if (NOT TARGET solanaceae_contact)
 	FetchContent_MakeAvailable(solanaceae_contact)
 endif()
 
+if (NOT TARGET solanaceae_message3)
+	FetchContent_Declare(solanaceae_message3
+		GIT_REPOSITORY https://github.com/Green-Sky/solanaceae_message3.git
+		GIT_TAG master
+	)
+	FetchContent_MakeAvailable(solanaceae_message3)
+endif()
+
+add_subdirectory(./toxcore)
+
+if (NOT TARGET solanaceae_toxcore)
+	FetchContent_Declare(solanaceae_toxcore
+		GIT_REPOSITORY https://github.com/Green-Sky/solanaceae_toxcore.git
+		GIT_TAG master
+	)
+	FetchContent_MakeAvailable(solanaceae_toxcore)
+endif()
+
 # only need the contact stuff
 if (NOT TARGET solanaceae_tox_contacts)
 	FetchContent_Declare(solanaceae_tox
