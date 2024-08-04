@@ -68,6 +68,7 @@ namespace P2PRNG::Events {
 		const ByteSpan id;
 
 		bool self {false}; // who started the rng
+		const ByteSpan initial_state;
 	};
 
 	// received an hmac (or own, when first)
