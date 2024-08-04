@@ -67,6 +67,6 @@ endif()
 add_subdirectory(./src)
 
 if (SOLANACEAE_TOX_P2PRNG_BUILD_PLUGINS)
-	#add_subdirectory(./plugins)
+	add_subdirectory(./plugins)
 endif()
 

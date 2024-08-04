@@ -50,6 +50,14 @@ std::vector<uint8_t> ToxP2PRNG::newGernationPeers(const std::vector<Contact3Hand
 	return {};
 }
 
+P2PRNG::State ToxP2PRNG::getSate(const ByteSpan id) {
+	return P2PRNG::State::UNKNOWN;
+}
+
+ByteSpan ToxP2PRNG::getResult(const ByteSpan id) {
+	return {};
+}
+
 bool ToxP2PRNG::handlePacket(
 	Contact3Handle c,
 	const uint8_t* data,
