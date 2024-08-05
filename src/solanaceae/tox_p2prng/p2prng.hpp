@@ -75,16 +75,16 @@ namespace P2PRNG::Events {
 	struct HMAC {
 		const ByteSpan id;
 
-		int32_t have;
-		int32_t out_of;
+		uint16_t have;
+		uint16_t out_of;
 	};
 
 	// received a secret (or own, when first)
 	struct Secret {
 		const ByteSpan id;
 
-		int32_t have;
-		int32_t out_of;
+		uint16_t have;
+		uint16_t out_of;
 	};
 
 	struct Done {

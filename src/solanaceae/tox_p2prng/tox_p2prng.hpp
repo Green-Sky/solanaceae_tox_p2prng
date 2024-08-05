@@ -50,7 +50,6 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 			// use contacts instead?
 			entt::dense_map<Contact3, std::array<uint8_t, P2PRNG_MAC_LEN>> hmacs;
 			entt::dense_map<Contact3, std::array<uint8_t, P2PRNG_LEN + P2PRNG_MAC_KEY_LEN>> secrets;
-			entt::dense_map<Contact3, bool> secrets_valid;
 
 			void genFinalResult(void);
 
@@ -93,17 +92,37 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 			const bool _private
 		);
 
-		bool handle_init_with_hmac(Contact3Handle c, ByteSpan id, ByteSpan data);
-		bool handle_hmac(Contact3Handle c, ByteSpan id, ByteSpan data);
-		bool handle_hmac_request(Contact3Handle c, ByteSpan id, ByteSpan data);
-		bool handle_secret(Contact3Handle c, ByteSpan id, ByteSpan data);
-		bool handle_secret_request(Contact3Handle c, ByteSpan id, ByteSpan data);
+		bool handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data);
+		bool handle_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data);
+		bool handle_hmac_request(Contact3Handle c, const ByteSpan id, ByteSpan data);
+		bool handle_secret(Contact3Handle c, const ByteSpan id, ByteSpan data);
+		bool handle_secret_request(Contact3Handle c, const ByteSpan id, ByteSpan data);
 
-		//bool send_init_with_hmac(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
-		bool send_hmac(Contact3Handle c, ByteSpan id, const ByteSpan hmac);
-		bool send_hmac_request(Contact3Handle c, ByteSpan id);
-		bool send_secret(Contact3Handle c, ByteSpan id, const ByteSpan secret);
-		bool send_secret_request(Contact3Handle c, ByteSpan id);
+		bool send_init_with_hmac(
+			Contact3Handle c,
+			const ByteSpan id,
+			const std::vector<Contact3Handle>& peers,
+			const ByteSpan inital_state,
+			const ByteSpan hmac
+		);
+		bool send_hmac(
+			Contact3Handle c,
+			const ByteSpan id,
+			const ByteSpan hmac
+		);
+		bool send_hmac_request(
+			Contact3Handle c,
+			const ByteSpan id
+		);
+		bool send_secret(
+			Contact3Handle c,
+			const ByteSpan id,
+			const ByteSpan secret
+		);
+		bool send_secret_request(
+			Contact3Handle c,
+			const ByteSpan id
+		);
 
 		RngState* getRngSate(Contact3Handle c, ByteSpan id);
 

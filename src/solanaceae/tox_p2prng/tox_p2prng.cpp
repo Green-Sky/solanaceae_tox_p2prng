@@ -7,12 +7,15 @@
 #include <iostream>
 #include <vector>
 
+// https://soundcloud.com/deadcrxw/glom-glass-deadcrow-flip-free-download
+
 // packets:
 //
 // init_with_hmac
 //   - id
 //   - peerlist (includes sender, determines fusion order)
 //   - sender hmac
+//   - is
 //
 // hmac
 //   - id
@@ -246,21 +249,159 @@ bool ToxP2PRNG::handleGroupPacket(
 	return handlePacket(c, tpr_pkg_type, {data.ptr+2, data.size-2});
 }
 
-bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet INIT_WITH_HMAC\n";
 	size_t curser = 0;
 
 	return false;
 }
 
-bool ToxP2PRNG::handle_hmac(Contact3Handle c, ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet HMAC\n";
-	size_t curser = 0;
 
-	return false;
+	if (data.size < P2PRNG_MAC_LEN) {
+		std::cerr << "TP2PRNG error: HMAC missing from HMAC\n";
+		return false;
+	}
+
+	ByteSpan hmac {data.ptr, P2PRNG_MAC_LEN};
+
+	if (data.size > hmac.size) {
+		std::cerr << "TP2PRNG warning: HMAC pkg has extra data!\n";
+	}
+
+	auto* rng_state = getRngSate(c, id);
+	if (rng_state == nullptr) {
+		return false;
+	}
+
+	// check if preexisting (do nothing)
+	auto hmac_it = rng_state->hmacs.find(c);
+	if (hmac_it == rng_state->hmacs.cend()) {
+		// preexisting
+		return false;
+	}
+
+	// add and do events
+	auto& hmac_record = rng_state->hmacs[c];
+	for (size_t i = 0; i < P2PRNG_MAC_LEN; i++) {
+		hmac_record[i] = hmac[i];
+	}
+
+	// fire update event
+	dispatch(
+		P2PRNG_Event::hmac,
+		P2PRNG::Events::HMAC{
+			id,
+			static_cast<uint16_t>(rng_state->hmacs.size()),
+			static_cast<uint16_t>(rng_state->contacts.size()),
+		}
+	);
+
+	if (rng_state->hmacs.size() != rng_state->contacts.size()) {
+		// dont have all hmacs yet
+		return true;
+	}
+	// have all hmacs !
+
+	// now we send out our secret and collect secrets
+	// we should also validate any secret that already is in storage
+	// TODO: move somewhere else
+
+	// validate existing (self should be good)
+	std::vector<Contact3> bad_secrets;
+	for (const auto& [pre_c, secret] : rng_state->secrets) {
+		const auto& pre_hmac = rng_state->hmacs.at(pre_c);
+		if (p2prng_auth_verify(secret.data()+P2PRNG_LEN, pre_hmac.data(), secret.data(), P2PRNG_LEN) != 0) {
+			// bad secret
+			std::cerr
+				<< "########################################\n"
+				<< "TP2PRNG error: bad secret, validation failed!\n"
+				<< "########################################\n"
+			;
+			bad_secrets.push_back(pre_c);
+
+			dispatch(
+				P2PRNG_Event::val_error,
+				P2PRNG::Events::ValError{
+					id,
+					pre_c,
+				}
+			);
+		}
+	}
+	for (const auto bad_c : bad_secrets) {
+		rng_state->secrets.erase(bad_c);
+	}
+
+	// find self contact
+	// TODO: accel
+	// TODO: do TagSelfStrong over contacts instead?? probably. maybe additionally
+	Contact3Handle self;
+	if (c.all_of<Contact::Components::Self>()) {
+		self = Contact3Handle{*c.registry(), c.get<Contact::Components::Self>().self};
+	} else if (c.all_of<Contact::Components::Parent>()) {
+		Contact3Handle parent = {*c.registry(), c.get<Contact::Components::Parent>().parent};
+		if (static_cast<bool>(parent) && parent.all_of<Contact::Components::Self>()) {
+			self = Contact3Handle{*c.registry(), parent.get<Contact::Components::Self>().self};
+		}
+	}
+
+	if (!static_cast<bool>(self)) {
+		std::cerr << "TP2PRNG error: failed to look up self\n";
+		return false;
+	}
+
+	auto self_secret_it = rng_state->secrets.find(self);
+	if (self_secret_it == rng_state->secrets.cend()) {
+		// hmmmmmmmmmm this bad
+		std::cerr << "hmmmmmmmmmm this bad\n";
+		return false;
+	}
+
+	// fire update event
+	dispatch(
+		P2PRNG_Event::secret,
+		P2PRNG::Events::Secret{
+			id,
+			static_cast<uint16_t>(rng_state->secrets.size()),
+			static_cast<uint16_t>(rng_state->contacts.size()),
+		}
+	);
+
+	// TODO: queue these instead
+	for (const auto peer : rng_state->contacts) {
+		send_secret(peer, id, ByteSpan{self_secret_it->second});
+	}
+
+	// :) now the funky part
+	// what if we also already have all secrets (a single hmac was the hold up)
+	if (rng_state->secrets.size() != rng_state->contacts.size()) {
+		// dont have all secrets yet
+		return true;
+	}
+	// have also all secrets o.O
+
+	rng_state->genFinalResult();
+
+	if (rng_state->final_result.empty()) {
+		std::cerr << "oh no, oh god\n";
+		return true;
+	}
+
+	// fire done event
+	dispatch(
+		P2PRNG_Event::done,
+		P2PRNG::Events::Done{
+			id,
+			ByteSpan{rng_state->final_result},
+		}
+	);
+
+	return true;
 }
 
-bool ToxP2PRNG::handle_hmac_request(Contact3Handle c, ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_hmac_request(Contact3Handle c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet HMAC_REQUEST\n";
 
 	if (!data.empty()) {
@@ -272,17 +413,46 @@ bool ToxP2PRNG::handle_hmac_request(Contact3Handle c, ByteSpan id, ByteSpan data
 		return false;
 	}
 
+	// no state check necessary
+
+	// find self contact
+	// TODO: accel
+	// TODO: do TagSelfStrong over contacts instead?? probably. maybe additionally
+	Contact3Handle self;
+	if (c.all_of<Contact::Components::Self>()) {
+		self = Contact3Handle{*c.registry(), c.get<Contact::Components::Self>().self};
+	} else if (c.all_of<Contact::Components::Parent>()) {
+		Contact3Handle parent = {*c.registry(), c.get<Contact::Components::Parent>().parent};
+		if (static_cast<bool>(parent) && parent.all_of<Contact::Components::Self>()) {
+			self = Contact3Handle{*c.registry(), parent.get<Contact::Components::Self>().self};
+		}
+	}
+
+	if (!static_cast<bool>(self)) {
+		std::cerr << "TP2PRNG error: failed to look up self\n";
+		return false;
+	}
+
+	auto self_hmac_it = rng_state->hmacs.find(self);
+	if (self_hmac_it == rng_state->hmacs.cend()) {
+		// hmmmmmmmmmm this bad
+		std::cerr << "hmmmmmmmmmm this bad\n";
+		return false;
+	}
+
+	// TODO: queue these instead
+	send_hmac(c, id, ByteSpan{self_hmac_it->second});
 	return false;
 }
 
-bool ToxP2PRNG::handle_secret(Contact3Handle c, ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_secret(Contact3Handle c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet SECRET\n";
 	size_t curser = 0;
 
 	return false;
 }
 
-bool ToxP2PRNG::handle_secret_request(Contact3Handle c, ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_secret_request(Contact3Handle c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet SECRET_REQUEST\n";
 
 	if (!data.empty()) {
@@ -380,6 +550,47 @@ static bool sendToxPrivatePacket(
 	return false;
 }
 
+bool ToxP2PRNG::send_init_with_hmac(
+	Contact3Handle c,
+	const ByteSpan id,
+	const std::vector<Contact3Handle>& peers,
+	const ByteSpan inital_state,
+	const ByteSpan hmac
+) {
+	auto [pkg, tfe, tgpe] = prepSendPkgWithID(c, PKG::INIT_WITH_HMAC, id);
+	if (pkg.empty()) {
+		return false;
+	}
+
+	//   - peerlist (includes sender, determines fusion order)
+	for (const auto peer : peers) {
+		if (const auto* tfp = peer.try_get<Contact::Components::ToxFriendPersistent>(); tfp != nullptr) {
+			pkg.insert(pkg.cend(), tfp->key.data.cbegin(), tfp->key.data.cend());
+			continue;
+		}
+
+		if (const auto* tgpp = peer.try_get<Contact::Components::ToxGroupPeerPersistent>(); tgpp != nullptr) {
+			pkg.insert(pkg.cend(), tgpp->peer_key.data.cbegin(), tgpp->peer_key.data.cend());
+			continue;
+		}
+
+		if (!peer.any_of<Contact::Components::ToxFriendPersistent, Contact::Components::ToxGroupPeerPersistent>()) {
+			return false;
+		}
+	}
+
+
+	//   - sender hmac
+	pkg.insert(pkg.cend(), hmac.cbegin(), hmac.cend());
+
+	//   - is
+	pkg.insert(pkg.cend(), inital_state.cbegin(), inital_state.cend());
+
+	std::cout << "TP2PRNG: seding INIT_WITH_HMAC s:" << pkg.size() << "\n";
+
+	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
+}
+
 bool ToxP2PRNG::send_hmac(Contact3Handle c, ByteSpan id, const ByteSpan hmac) {
 	auto [pkg, tfe, tgpe] = prepSendPkgWithID(c, PKG::HMAC, id);
 	if (pkg.empty()) {
@@ -389,7 +600,7 @@ bool ToxP2PRNG::send_hmac(Contact3Handle c, ByteSpan id, const ByteSpan hmac) {
 	//   - hmac
 	pkg.insert(pkg.cend(), hmac.cbegin(), hmac.cend());
 
-	return false;
+	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
 
 bool ToxP2PRNG::send_hmac_request(Contact3Handle c, ByteSpan id) {
