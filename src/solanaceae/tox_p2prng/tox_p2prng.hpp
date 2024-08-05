@@ -2,9 +2,14 @@
 
 #include "./p2prng.hpp"
 
+#include <p2prng.h>
+
 #include <solanaceae/tox_contacts/tox_contact_model2.hpp>
 
+#include <entt/container/dense_map.hpp>
+
 #include <cstdint>
+#include <vector>
 
 // implements P2PRNGI for tox
 // both tox friends(1to1) aswell as tox ngc(NtoN) should be supported
@@ -23,6 +28,33 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 		SECRET,
 		SECRET_REQUEST,
 	};
+
+	using ID = std::array<uint8_t, 32>;
+	struct IDHash {size_t operator()(const ID& a) const {return (a[0] | a[1] << 1*8 | a[2] << 1*16 | a[3] << 1*24) ^ (a[31] | a[30] << 1*8);}};
+
+	struct RngState {
+		// all contacts participating, including self
+		std::vector<Contact3Handle> contacts;
+
+		// app given
+		std::vector<uint8_t> inital_state;
+
+		// the other stuff needed for full IS (preamble+IS)
+		//  - ID
+		//  - list of public keys of contacts (same order as later used to calc res)
+		std::vector<uint8_t> inital_state_preamble;
+		void fillInitalStatePreamble(const ByteSpan id);
+
+		// use contacts instead?
+		entt::dense_map<Contact3, std::array<uint8_t, P2PRNG_MAC_LEN>> hmacs;
+		entt::dense_map<Contact3, std::array<uint8_t, P2PRNG_LEN + P2PRNG_MAC_KEY_LEN>> secrets;
+		entt::dense_map<Contact3, bool> secrets_valid;
+
+		void genFinalResult(void);
+
+		std::vector<uint8_t> final_result; // cached
+	};
+	entt::dense_map<ID, RngState, IDHash> _global_map;
 
 	public:
 		ToxP2PRNG(
@@ -60,11 +92,13 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 			const bool _private
 		);
 
-		bool parse_init_with_hmac(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
-		bool parse_hmac(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
-		bool parse_hmac_request(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
-		bool parse_secret(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
-		bool parse_secret_request(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
+		bool handle_init_with_hmac(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
+		bool handle_hmac(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
+		bool handle_hmac_request(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
+		bool handle_secret(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
+		bool handle_secret_request(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size);
+
+		RngState* getRngSate(Contact3Handle c, ByteSpan id);
 
 	protected:
 		bool onToxEvent(const Tox_Event_Friend_Lossless_Packet* e) override;
