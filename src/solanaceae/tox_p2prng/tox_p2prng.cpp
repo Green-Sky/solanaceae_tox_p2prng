@@ -1,5 +1,7 @@
 #include "./tox_p2prng.hpp"
 
+#include <iostream>
+
 // packets:
 //
 // init_with_hmac
@@ -20,14 +22,6 @@
 //
 // secret_request
 //   - id
-
-enum PKG {
-	INIT_WITH_HMAC,
-	HMAC,
-	HMAC_REQUEST,
-	SECRET,
-	SECRET_REQUEST,
-};
 
 ToxP2PRNG::ToxP2PRNG(
 	ToxI& t,
@@ -60,6 +54,7 @@ ByteSpan ToxP2PRNG::getResult(const ByteSpan id) {
 
 bool ToxP2PRNG::handlePacket(
 	Contact3Handle c,
+	PKG pkg_type,
 	const uint8_t* data,
 	const size_t data_size
 ) {
@@ -67,19 +62,25 @@ bool ToxP2PRNG::handlePacket(
 		return false; // waht
 	}
 
-	PKG pkg_type = static_cast<PKG>(data[0]);
+	// rn all are prefixed with ID, so here we go
+	if (data_size < 32) {
+		std::cerr << "TP2PRNG error: packet without id\n";
+		return false;
+	}
+
+	ByteSpan id{data, 32};
 
 	switch (pkg_type) {
 		case PKG::INIT_WITH_HMAC:
-			return parse_init_with_hmac(c, data+1, data_size-1);
+			return parse_init_with_hmac(c, id, data+32, data_size-(32));
 		case PKG::HMAC:
-			return parse_hmac(c, data+1, data_size-1);
+			return parse_hmac(c, id, data+32, data_size-(32));
 		case PKG::HMAC_REQUEST:
-			return parse_hmac_request(c, data+1, data_size-1);
+			return parse_hmac_request(c, id, data+32, data_size-(32));
 		case PKG::SECRET:
-			return parse_secret(c, data+1, data_size-1);
+			return parse_secret(c, id, data+32, data_size-(32));
 		case PKG::SECRET_REQUEST:
-			return parse_secret_request(c, data+1, data_size-1);
+			return parse_secret_request(c, id, data+32, data_size-(32));
 		default:
 			return false;
 	}
@@ -93,12 +94,23 @@ bool ToxP2PRNG::handleFriendPacket(
 	const uint8_t* data,
 	const size_t data_size
 ) {
+	// packet id + packet id + id
+	if (data_size < 1+1+32) {
+		return false;
+	}
+
+	if (data[0] != 0xB1) { // 177
+		return false;
+	}
+
+	PKG tpr_pkg_type = static_cast<PKG>(data[1]);
+
 	auto c = _tcm.getContactFriend(friend_number);
 	if (!static_cast<bool>(c)) {
 		return false;
 	}
 
-	return handlePacket(c, data, data_size);
+	return handlePacket(c, tpr_pkg_type, data+2, data_size-2);
 }
 
 bool ToxP2PRNG::handleGroupPacket(
@@ -108,39 +120,55 @@ bool ToxP2PRNG::handleGroupPacket(
 	const size_t data_size,
 	const bool /*_private*/
 ) {
+	// packet id + packet id + id
+	if (data_size < 1+1+32) {
+		return false;
+	}
+
+	if (data[0] != (0x80 | 38u)) { // 0xa6 / 166
+		return false;
+	}
+
+	PKG tpr_pkg_type = static_cast<PKG>(data[1]);
+
 	auto c = _tcm.getContactGroupPeer(group_number, peer_number);
 	if (!static_cast<bool>(c)) {
 		return false;
 	}
 
-	return handlePacket(c, data, data_size);
+	return handlePacket(c, tpr_pkg_type, data+2, data_size-2);
 }
 
-bool ToxP2PRNG::parse_init_with_hmac(Contact3Handle c, const uint8_t* data, size_t data_size) {
+bool ToxP2PRNG::parse_init_with_hmac(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size) {
+	std::cerr << "TP2PRNG: got packet init_with_hmac\n";
 	size_t curser = 0;
 
 	return false;
 }
 
-bool ToxP2PRNG::parse_hmac(Contact3Handle c, const uint8_t* data, size_t data_size) {
+bool ToxP2PRNG::parse_hmac(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size) {
+	std::cerr << "TP2PRNG: got packet hmac\n";
 	size_t curser = 0;
 
 	return false;
 }
 
-bool ToxP2PRNG::parse_hmac_request(Contact3Handle c, const uint8_t* data, size_t data_size) {
+bool ToxP2PRNG::parse_hmac_request(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size) {
+	std::cerr << "TP2PRNG: got packet hmac_request\n";
 	size_t curser = 0;
 
 	return false;
 }
 
-bool ToxP2PRNG::parse_secret(Contact3Handle c, const uint8_t* data, size_t data_size) {
+bool ToxP2PRNG::parse_secret(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size) {
+	std::cerr << "TP2PRNG: got packet secret\n";
 	size_t curser = 0;
 
 	return false;
 }
 
-bool ToxP2PRNG::parse_secret_request(Contact3Handle c, const uint8_t* data, size_t data_size) {
+bool ToxP2PRNG::parse_secret_request(Contact3Handle c, ByteSpan id, const uint8_t* data, size_t data_size) {
+	std::cerr << "TP2PRNG: got packet secret_request\n";
 	size_t curser = 0;
 
 	return false;
