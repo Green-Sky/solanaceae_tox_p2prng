@@ -37,6 +37,7 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 		struct RngState {
 			// all contacts participating, including self
 			std::vector<Contact3Handle> contacts;
+			Contact3Handle getSelf(void) const;
 
 			// app given
 			std::vector<uint8_t> inital_state;
@@ -58,6 +59,9 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 			P2PRNG::State getState(void) const;
 		};
 		entt::dense_map<ID, RngState, IDHash> _global_map;
+
+		void checkHaveAllHMACs(RngState* rng_state, const ByteSpan id);
+		void checkHaveAllSecrets(RngState* rng_state, const ByteSpan id); // can fire done event
 
 	public:
 		ToxP2PRNG(

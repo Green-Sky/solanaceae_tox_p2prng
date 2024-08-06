@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <vector>
+#include <utility>
 
 // https://soundcloud.com/deadcrxw/glom-glass-deadcrow-flip-free-download
 
@@ -33,6 +34,16 @@
 
 #define TOX_PKG_ID_FRIEND 0xB1
 #define TOX_PKG_ID_GROUP 0xa6
+
+Contact3Handle ToxP2PRNG::RngState::getSelf(void) const {
+	for (auto c : contacts) {
+		if (c.all_of<Contact::Components::TagSelfStrong>()) {
+			return c;
+		}
+	}
+
+	return {};
+}
 
 void ToxP2PRNG::RngState::fillInitalStatePreamble(const ByteSpan id) {
 	// id
@@ -137,6 +148,105 @@ P2PRNG::State ToxP2PRNG::RngState::getState(void) const {
 	return P2PRNG::UNKNOWN;
 }
 
+void ToxP2PRNG::checkHaveAllHMACs(RngState* rng_state, const ByteSpan id) {
+	if (rng_state == nullptr) {
+		return;
+	}
+
+	if (rng_state->hmacs.size() != rng_state->contacts.size()) {
+		// dont have all hmacs yet
+		return;
+	}
+	// have all hmacs !
+
+	// now we send out our secret and collect secrets
+	// we should also validate any secret that already is in storage
+
+	// validate existing (self should be good)
+	std::vector<Contact3> bad_secrets;
+	for (const auto& [pre_c, secret] : rng_state->secrets) {
+		const auto& pre_hmac = rng_state->hmacs.at(pre_c);
+		if (p2prng_auth_verify(secret.data()+P2PRNG_LEN, pre_hmac.data(), secret.data(), P2PRNG_LEN) != 0) {
+			// bad secret
+			std::cerr
+				<< "########################################\n"
+				<< "TP2PRNG error: bad secret, validation failed!\n"
+				<< "########################################\n"
+			;
+			bad_secrets.push_back(pre_c);
+
+			dispatch(
+				P2PRNG_Event::val_error,
+				P2PRNG::Events::ValError{
+					id,
+					pre_c,
+				}
+			);
+		}
+	}
+	for (const auto bad_c : bad_secrets) {
+		rng_state->secrets.erase(bad_c);
+	}
+
+	// find self contact
+	Contact3Handle self = rng_state->getSelf();
+	if (!static_cast<bool>(self)) {
+		std::cerr << "TP2PRNG error: failed to look up self\n";
+		return;
+	}
+
+	auto self_secret_it = rng_state->secrets.find(self);
+	if (self_secret_it == rng_state->secrets.cend()) {
+		// hmmmmmmmmmm this bad
+		std::cerr << "hmmmmmmmmmm this bad\n";
+		return;
+	}
+
+	// fire update event
+	dispatch(
+		P2PRNG_Event::secret,
+		P2PRNG::Events::Secret{
+			id,
+			static_cast<uint16_t>(rng_state->secrets.size()),
+			static_cast<uint16_t>(rng_state->contacts.size()),
+		}
+	);
+
+	// TODO: queue these instead
+	for (const auto peer : rng_state->contacts) {
+		// TODO: record send success
+		send_secret(peer, id, ByteSpan{self_secret_it->second});
+	}
+}
+
+void ToxP2PRNG::checkHaveAllSecrets(RngState* rng_state, const ByteSpan id) {
+	if (rng_state == nullptr) {
+		return;
+	}
+
+	if (rng_state->secrets.size() != rng_state->contacts.size()) {
+		// dont have all secrets yet
+		return;
+	}
+	// have also all secrets o.O
+
+	rng_state->genFinalResult();
+
+	if (rng_state->final_result.empty()) {
+		std::cerr << "oh no, oh god\n";
+		return;
+	}
+
+	// fire done event
+	dispatch(
+		P2PRNG_Event::done,
+		P2PRNG::Events::Done{
+			id,
+			ByteSpan{rng_state->final_result},
+		}
+	);
+}
+
 ToxP2PRNG::ToxP2PRNG(
 	ToxI& t,
 	ToxEventProviderI& tep,
@@ -158,12 +268,46 @@ std::vector<uint8_t> ToxP2PRNG::newGernationPeers(const std::vector<Contact3Hand
 	return {};
 }
 
-P2PRNG::State ToxP2PRNG::getSate(const ByteSpan id) {
-	return P2PRNG::State::UNKNOWN;
+P2PRNG::State ToxP2PRNG::getSate(const ByteSpan id_bytes) {
+	if (id_bytes.size != ID{}.size()) {
+		return P2PRNG::State::UNKNOWN;
+	}
+
+	ID r_id{};
+	{ // building the id is very annoying, should have not used array?
+		// TODO: provide custom comperator ?
+		for (size_t i = 0; i < r_id.size(); i++) {
+			r_id[i] = id_bytes[i];
+		}
+	}
+
+	const auto find_it = _global_map.find(r_id);
+	if (find_it == _global_map.cend()) {
+		return P2PRNG::State::UNKNOWN;
+	} else {
+		return find_it->second.getState();
+	}
 }
 
-ByteSpan ToxP2PRNG::getResult(const ByteSpan id) {
-	return {};
+ByteSpan ToxP2PRNG::getResult(const ByteSpan id_bytes) {
+	if (id_bytes.size != ID{}.size()) {
+		return {};
+	}
+
+	ID r_id{};
+	{ // building the id is very annoying, should have not used array?
+		// TODO: provide custom comperator ?
+		for (size_t i = 0; i < r_id.size(); i++) {
+			r_id[i] = id_bytes[i];
+		}
+	}
+
+	const auto find_it = _global_map.find(r_id);
+	if (find_it == _global_map.cend()) {
+		return {};
+	} else {
+		return ByteSpan{find_it->second.final_result};
+	}
 }
 
 bool ToxP2PRNG::handlePacket(
@@ -249,11 +393,166 @@ bool ToxP2PRNG::handleGroupPacket(
 	return handlePacket(c, tpr_pkg_type, {data.ptr+2, data.size-2});
 }
 
+#define _DATA_HAVE(x, error) if ((data.size - curser) < (x)) { error; }
+
 bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet INIT_WITH_HMAC\n";
+
+	if (data.size  < sizeof(uint16_t) + ToxKey{}.size() + 1) {
+		// bare minimum size is a single peer with 1byte IS
+		std::cerr << "TP2PRNG error: INIT_WITH_HMAC too small\n";
+		return false;
+	}
+
 	size_t curser = 0;
 
-	return false;
+	//   - peerlist (includes sender, determines fusion order)
+	// first numer of peers
+	uint16_t peer_count = 0u;
+	_DATA_HAVE(sizeof(peer_count), std::cerr << "TP2PRNG error: packet too small, missing peer_count\n"; return false)
+	for (size_t i = 0; i < sizeof(peer_count); i++, curser++) {
+		peer_count |= uint32_t(data[curser]) << (i*8);
+	}
+
+	// then the peers
+	_DATA_HAVE(peer_count * ToxKey{}.size(), std::cerr << "TP2PRNG error: packet too small, missing peers\n"; return false)
+	std::vector<ToxKey> peers;
+	for (size_t peer_i = 0; peer_i < peer_count; peer_i++) {
+		auto& new_peer = peers.emplace_back();
+		for (size_t i = 0; i < new_peer.size(); i++, curser++) {
+			new_peer.data[i] = data[curser];
+		}
+	}
+
+	if (data.size - curser <= 0) {
+		std::cerr << "TP2PRNG error: packet too small, missing inital_state\n";
+		return false;
+	}
+
+	const ByteSpan inital_state {data.ptr + curser, data.size - curser};
+
+	// lets check if id already exists (after parse, so they cant cheap out)
+	if (const auto* rng_state = getRngSate(c, id); rng_state != nullptr) {
+		// we already know this maybe we did not send hmac or it got lost
+
+		auto self = rng_state->getSelf();
+		if (!static_cast<bool>(self)) {
+			std::cerr << "uh wtf\n";
+			return true;
+		}
+
+		auto hmac_it = rng_state->hmacs.find(self);
+		if (hmac_it == rng_state->hmacs.cend()) {
+			std::cerr << "uh wtf, bad bad\n";
+			return true;
+		}
+
+		send_hmac(c, id, ByteSpan{hmac_it->second});
+
+		return true; // mark handled
+	}
+
+	// else, its new
+	// first resolve peer keys to contacts
+	std::vector<Contact3Handle> peer_contacts;
+	if (c.all_of<Contact::Components::ToxFriendEphemeral>()) {
+		// assuming a 1to1 can only have 2 peers
+		assert(peers.size() == 2);
+		for (const auto& peer_key : peers) {
+			// TODO: accel lookup
+			for (const auto& [find_c, tfp] : c.registry()->view<Contact::Components::ToxFriendPersistent>().each()) {
+				if (tfp.key == peer_key) {
+					peer_contacts.push_back(Contact3Handle{*c.registry(), find_c});
+					break;
+				}
+			}
+		}
+		if (peer_contacts.size() != peers.size()) {
+			std::cerr << "TP2PRNG error: not all peers in peer list could be resolved to contacts\n";
+			return true;
+		}
+	} else if (c.all_of<Contact::Components::ToxGroupPeerEphemeral>()) {
+		for (const auto& peer_key : peers) {
+			// TODO: accel lookup
+			for (const auto& [find_c, tgpp] : c.registry()->view<Contact::Components::ToxGroupPeerPersistent>().each()) {
+				if (tgpp.peer_key == peer_key) {
+					peer_contacts.push_back(Contact3Handle{*c.registry(), find_c});
+					break;
+				}
+			}
+		}
+		if (peer_contacts.size() != peers.size()) {
+			std::cerr << "TP2PRNG error: not all peers in peer list could be resolved to contacts\n";
+			return true;
+		}
+	} else {
+		// yooo how did we get here
+		assert(false);
+		return true;
+	}
+
+	ID new_gen_id;
+	for (size_t i = 0; i < new_gen_id.size(); i++) {
+		new_gen_id[i] = id[i];
+	}
+
+	RngState& new_rng_state = _global_map[new_gen_id];
+	new_rng_state.inital_state = std::vector<uint8_t>(inital_state.cbegin(), inital_state.cend());
+	new_rng_state.contacts = std::move(peer_contacts);
+	new_rng_state.fillInitalStatePreamble(id); // could be faster if we used peer_keys directly
+
+	auto self = new_rng_state.getSelf();
+	if (!static_cast<bool>(self)) {
+		std::cerr << "TP2PRNG error: failed to find self in new gen\n";
+		_global_map.erase(new_gen_id);
+		return true;
+	}
+
+	std::vector<uint8_t> gen_inital_state = new_rng_state.inital_state_preamble;
+	gen_inital_state.insert(gen_inital_state.cend(), inital_state.cbegin(), inital_state.cend());
+
+	std::array<uint8_t, P2PRNG_MAC_LEN> hmac;
+	std::array<uint8_t, P2PRNG_LEN + P2PRNG_MAC_KEY_LEN> secret;
+	if (p2prng_gen_and_auth(secret.data(), secret.data()+P2PRNG_LEN, hmac.data(), gen_inital_state.data(), gen_inital_state.size()) != 0) {
+		std::cerr << "TP2PRNG error: failed to generate and hmac from is\n";
+		_global_map.erase(new_gen_id);
+		return true;
+	}
+
+	new_rng_state.hmacs[self] = hmac;
+	new_rng_state.secrets[self] = secret;
+
+	// fire init event?
+	dispatch(
+		P2PRNG_Event::init,
+		P2PRNG::Events::Init{
+			id,
+			false,
+			inital_state,
+		}
+	);
+
+	// TODO: queue
+	// TODO: record result
+	send_hmac(c, id, ByteSpan{hmac});
+
+	// fire hmac event
+	dispatch(
+		P2PRNG_Event::hmac,
+		P2PRNG::Events::HMAC{
+			id,
+			static_cast<uint16_t>(new_rng_state.hmacs.size()),
+			static_cast<uint16_t>(new_rng_state.contacts.size()),
+		}
+	);
+
+	// fun, this is the case in a 1to1
+	checkHaveAllHMACs(&new_rng_state, id);
+
+	// not possible, we hare handling INIT_WITH_HMAC here, not with secret
+	//checkHaveAllSecrets(&new_rng_state, id);
+
+	return true;
 }
 
 bool ToxP2PRNG::handle_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) {
@@ -298,105 +597,12 @@ bool ToxP2PRNG::handle_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) 
 		}
 	);
 
-	if (rng_state->hmacs.size() != rng_state->contacts.size()) {
-		// dont have all hmacs yet
-		return true;
-	}
-	// have all hmacs !
-
-	// now we send out our secret and collect secrets
-	// we should also validate any secret that already is in storage
-	// TODO: move somewhere else
-
-	// validate existing (self should be good)
-	std::vector<Contact3> bad_secrets;
-	for (const auto& [pre_c, secret] : rng_state->secrets) {
-		const auto& pre_hmac = rng_state->hmacs.at(pre_c);
-		if (p2prng_auth_verify(secret.data()+P2PRNG_LEN, pre_hmac.data(), secret.data(), P2PRNG_LEN) != 0) {
-			// bad secret
-			std::cerr
-				<< "########################################\n"
-				<< "TP2PRNG error: bad secret, validation failed!\n"
-				<< "########################################\n"
-			;
-			bad_secrets.push_back(pre_c);
-
-			dispatch(
-				P2PRNG_Event::val_error,
-				P2PRNG::Events::ValError{
-					id,
-					pre_c,
-				}
-			);
-		}
-	}
-	for (const auto bad_c : bad_secrets) {
-		rng_state->secrets.erase(bad_c);
-	}
-
-	// find self contact
-	// TODO: accel
-	// TODO: do TagSelfStrong over contacts instead?? probably. maybe additionally
-	Contact3Handle self;
-	if (c.all_of<Contact::Components::Self>()) {
-		self = Contact3Handle{*c.registry(), c.get<Contact::Components::Self>().self};
-	} else if (c.all_of<Contact::Components::Parent>()) {
-		Contact3Handle parent = {*c.registry(), c.get<Contact::Components::Parent>().parent};
-		if (static_cast<bool>(parent) && parent.all_of<Contact::Components::Self>()) {
-			self = Contact3Handle{*c.registry(), parent.get<Contact::Components::Self>().self};
-		}
-	}
-
-	if (!static_cast<bool>(self)) {
-		std::cerr << "TP2PRNG error: failed to look up self\n";
-		return false;
-	}
-
-	auto self_secret_it = rng_state->secrets.find(self);
-	if (self_secret_it == rng_state->secrets.cend()) {
-		// hmmmmmmmmmm this bad
-		std::cerr << "hmmmmmmmmmm this bad\n";
-		return false;
-	}
-
-	// fire update event
-	dispatch(
-		P2PRNG_Event::secret,
-		P2PRNG::Events::Secret{
-			id,
-			static_cast<uint16_t>(rng_state->secrets.size()),
-			static_cast<uint16_t>(rng_state->contacts.size()),
-		}
-	);
-
-	// TODO: queue these instead
-	for (const auto peer : rng_state->contacts) {
-		send_secret(peer, id, ByteSpan{self_secret_it->second});
-	}
+	// might be the final one we need
+	checkHaveAllHMACs(rng_state, id);
 
 	// :) now the funky part
 	// what if we also already have all secrets (a single hmac was the hold up)
-	if (rng_state->secrets.size() != rng_state->contacts.size()) {
-		// dont have all secrets yet
-		return true;
-	}
-	// have also all secrets o.O
-
-	rng_state->genFinalResult();
-
-	if (rng_state->final_result.empty()) {
-		std::cerr << "oh no, oh god\n";
-		return true;
-	}
-
-	// fire done event
-	dispatch(
-		P2PRNG_Event::done,
-		P2PRNG::Events::Done{
-			id,
-			ByteSpan{rng_state->final_result},
-		}
-	);
+	checkHaveAllSecrets(rng_state, id);
 
 	return true;
 }
@@ -416,17 +622,7 @@ bool ToxP2PRNG::handle_hmac_request(Contact3Handle c, const ByteSpan id, ByteSpa
 	// no state check necessary
 
 	// find self contact
-	// TODO: accel
-	// TODO: do TagSelfStrong over contacts instead?? probably. maybe additionally
-	Contact3Handle self;
-	if (c.all_of<Contact::Components::Self>()) {
-		self = Contact3Handle{*c.registry(), c.get<Contact::Components::Self>().self};
-	} else if (c.all_of<Contact::Components::Parent>()) {
-		Contact3Handle parent = {*c.registry(), c.get<Contact::Components::Parent>().parent};
-		if (static_cast<bool>(parent) && parent.all_of<Contact::Components::Self>()) {
-			self = Contact3Handle{*c.registry(), parent.get<Contact::Components::Self>().self};
-		}
-	}
+	Contact3Handle self = rng_state->getSelf();
 
 	if (!static_cast<bool>(self)) {
 		std::cerr << "TP2PRNG error: failed to look up self\n";
@@ -441,15 +637,87 @@ bool ToxP2PRNG::handle_hmac_request(Contact3Handle c, const ByteSpan id, ByteSpa
 	}
 
 	// TODO: queue these instead
+	// TODO: record send success
 	send_hmac(c, id, ByteSpan{self_hmac_it->second});
 	return false;
 }
 
 bool ToxP2PRNG::handle_secret(Contact3Handle c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet SECRET\n";
-	size_t curser = 0;
 
-	return false;
+	if (data.size < P2PRNG_LEN + P2PRNG_MAC_KEY_LEN) {
+		std::cerr << "TP2PRNG error: SECRET missing from SECRET\n";
+		return false;
+	}
+
+	if (data.size > P2PRNG_LEN + P2PRNG_MAC_KEY_LEN) {
+		std::cerr << "TP2PRNG warning: SECRET pkg has extra data!\n";
+	}
+
+	auto* rng_state = getRngSate(c, id);
+	if (rng_state == nullptr) {
+		return false;
+	}
+
+	// check if preexisting (do nothing)
+	auto secret_it = rng_state->secrets.find(c);
+	if (secret_it == rng_state->secrets.cend()) {
+		// preexisting
+		return true; // mark handled
+	}
+
+	const auto current_phase = rng_state->getState();
+
+	if (current_phase == P2PRNG::State::SECRET) { // validate if state correct
+		const ByteSpan msg {data.ptr, P2PRNG_LEN};
+		const ByteSpan key {data.ptr+P2PRNG_LEN, P2PRNG_MAC_KEY_LEN};
+
+		// hmac is only guarrantied to exist if state is correct
+		const auto& pre_hmac = rng_state->hmacs.at(c);
+		if (p2prng_auth_verify(key.ptr, pre_hmac.data(), msg.ptr, msg.size) != 0) {
+			// bad secret
+			std::cerr
+				<< "########################################\n"
+				<< "TP2PRNG error: bad secret, validation failed!\n"
+				<< "########################################\n"
+			;
+
+			dispatch(
+				P2PRNG_Event::val_error,
+				P2PRNG::Events::ValError{
+					id,
+					c,
+				}
+			);
+		}
+	}
+
+	// add
+	auto& secret_record = rng_state->secrets[c];
+	for (size_t i = 0; i < P2PRNG_LEN + P2PRNG_MAC_KEY_LEN; i++) {
+		secret_record[i] = data[i];
+	}
+
+	if (current_phase != P2PRNG::State::SECRET) {
+		// arrived early
+		return true;
+	}
+
+	// event if phase correct
+
+	dispatch(
+		P2PRNG_Event::secret,
+		P2PRNG::Events::Secret{
+			id,
+			static_cast<uint16_t>(rng_state->secrets.size()),
+			static_cast<uint16_t>(rng_state->contacts.size()),
+		}
+	);
+
+	// might have been last, we might be done
+	checkHaveAllSecrets(rng_state, id);
+
+	return true;
 }
 
 bool ToxP2PRNG::handle_secret_request(Contact3Handle c, const ByteSpan id, ByteSpan data) {
@@ -470,17 +738,7 @@ bool ToxP2PRNG::handle_secret_request(Contact3Handle c, const ByteSpan id, ByteS
 	}
 
 	// find self contact
-	// TODO: accel
-	// TODO: do TagSelfStrong over contacts instead?? probably. maybe additionally
-	Contact3Handle self;
-	if (c.all_of<Contact::Components::Self>()) {
-		self = Contact3Handle{*c.registry(), c.get<Contact::Components::Self>().self};
-	} else if (c.all_of<Contact::Components::Parent>()) {
-		Contact3Handle parent = {*c.registry(), c.get<Contact::Components::Parent>().parent};
-		if (static_cast<bool>(parent) && parent.all_of<Contact::Components::Self>()) {
-			self = Contact3Handle{*c.registry(), parent.get<Contact::Components::Self>().self};
-		}
-	}
+	Contact3Handle self = rng_state->getSelf();
 
 	if (!static_cast<bool>(self)) {
 		std::cerr << "TP2PRNG error: failed to look up self\n";
@@ -496,6 +754,7 @@ bool ToxP2PRNG::handle_secret_request(Contact3Handle c, const ByteSpan id, ByteS
 
 	// TODO: queue these instead
 	// SEND secret to c
+	// TODO: record send success
 	send_secret(c, id, ByteSpan{self_secret_it->second});
 
 	return true;
@@ -563,6 +822,13 @@ bool ToxP2PRNG::send_init_with_hmac(
 	}
 
 	//   - peerlist (includes sender, determines fusion order)
+	// first numer of peers
+	const uint16_t peer_count = peers.size();
+	for (size_t i = 0; i < sizeof(peer_count); i++) {
+		pkg.push_back((peer_count>>(i*8)) & 0xff);
+	}
+
+	// second the peers
 	for (const auto peer : peers) {
 		if (const auto* tfp = peer.try_get<Contact::Components::ToxFriendPersistent>(); tfp != nullptr) {
 			pkg.insert(pkg.cend(), tfp->key.data.cbegin(), tfp->key.data.cend());
