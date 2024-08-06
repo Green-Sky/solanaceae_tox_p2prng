@@ -40,12 +40,12 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 			Contact3Handle getSelf(void) const;
 
 			// app given
-			std::vector<uint8_t> inital_state;
+			std::vector<uint8_t> initial_state;
 
 			// the other stuff needed for full IS (preamble+IS)
 			//  - ID
 			//  - list of public keys of contacts (same order as later used to calc res)
-			std::vector<uint8_t> inital_state_preamble;
+			std::vector<uint8_t> initial_state_preamble;
 			void fillInitalStatePreamble(const ByteSpan id);
 
 			// use contacts instead?
@@ -106,7 +106,7 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 			Contact3Handle c,
 			const ByteSpan id,
 			const std::vector<Contact3Handle>& peers,
-			const ByteSpan inital_state,
+			const ByteSpan initial_state,
 			const ByteSpan hmac
 		);
 		bool send_hmac(

@@ -4,6 +4,8 @@
 #include <solanaceae/tox_contacts/components.hpp>
 #include <solanaceae/toxcore/tox_interface.hpp>
 
+#include <sodium.h>
+
 #include <iostream>
 #include <vector>
 #include <utility>
@@ -48,21 +50,21 @@ Contact3Handle ToxP2PRNG::RngState::getSelf(void) const {
 void ToxP2PRNG::RngState::fillInitalStatePreamble(const ByteSpan id) {
 	// id
 	// res = id
-	inital_state_preamble = static_cast<std::vector<uint8_t>>(id);
+	initial_state_preamble = static_cast<std::vector<uint8_t>>(id);
 
 	for (const auto c : contacts) {
 		if (!c.any_of<Contact::Components::ToxFriendPersistent, Contact::Components::ToxGroupPeerPersistent>()) {
-			inital_state_preamble.clear();
+			initial_state_preamble.clear();
 			return;
 		}
 
 		if (const auto* tfp = c.try_get<Contact::Components::ToxFriendPersistent>(); tfp != nullptr) {
-			inital_state_preamble.insert(inital_state_preamble.cend(), tfp->key.data.cbegin(), tfp->key.data.cend());
+			initial_state_preamble.insert(initial_state_preamble.cend(), tfp->key.data.cbegin(), tfp->key.data.cend());
 			continue;
 		}
 
 		if (const auto* tgpp = c.try_get<Contact::Components::ToxGroupPeerPersistent>(); tgpp != nullptr) {
-			inital_state_preamble.insert(inital_state_preamble.cend(), tgpp->peer_key.data.cbegin(), tgpp->peer_key.data.cend());
+			initial_state_preamble.insert(initial_state_preamble.cend(), tgpp->peer_key.data.cbegin(), tgpp->peer_key.data.cend());
 			continue;
 		}
 	}
@@ -84,11 +86,11 @@ void ToxP2PRNG::RngState::genFinalResult(void) {
 
 	// val
 
-	if (inital_state.empty()) {
+	if (initial_state.empty()) {
 		return;
 	}
 
-	if (inital_state_preamble.empty()) {
+	if (initial_state_preamble.empty()) {
 		return;
 	}
 
@@ -113,8 +115,8 @@ void ToxP2PRNG::RngState::genFinalResult(void) {
 	// finally, add in is
 	// hmmm copy, meh, we could do preamble and app is in seperate updates, which changes the algo, but should be fine
 	{
-		std::vector<uint8_t> full_is = inital_state_preamble;
-		full_is.insert(full_is.cend(), inital_state.cbegin(), inital_state.cend());
+		std::vector<uint8_t> full_is = initial_state_preamble;
+		full_is.insert(full_is.cend(), initial_state.cbegin(), initial_state.cend());
 
 		if (p2prng_combine_update(final_result.data(), final_result.data(), full_is.data(), full_is.size()) != 0) {
 			final_result.clear();
@@ -140,8 +142,8 @@ P2PRNG::State ToxP2PRNG::RngState::getState(void) const {
 		return P2PRNG::HMAC;
 	}
 
-	//INIT, // inital params (incoming or outgoing?)
-	if (!inital_state.empty() && !inital_state_preamble.empty()) {
+	//INIT, // initial params (incoming or outgoing?)
+	if (!initial_state.empty() && !initial_state_preamble.empty()) {
 		return P2PRNG::INIT;
 	}
 
@@ -214,6 +216,9 @@ void ToxP2PRNG::checkHaveAllHMACs(RngState* rng_state, const ByteSpan id) {
 
 	// TODO: queue these instead
 	for (const auto peer : rng_state->contacts) {
+		if (peer.all_of<Contact::Components::TagSelfStrong>()) {
+			continue; // skip self
+		}
 		// TODO: record send success
 		send_secret(peer, id, ByteSpan{self_secret_it->second});
 	}
@@ -261,11 +266,92 @@ ToxP2PRNG::~ToxP2PRNG(void) {
 }
 
 std::vector<uint8_t> ToxP2PRNG::newGernation(Contact3Handle c, const ByteSpan initial_state_user_data) {
+	(void)c;
+	(void)initial_state_user_data;
 	return {};
 }
 
 std::vector<uint8_t> ToxP2PRNG::newGernationPeers(const std::vector<Contact3Handle>& c_vec, const ByteSpan initial_state_user_data) {
-	return {};
+	if (initial_state_user_data.empty()) {
+		return {};
+	}
+
+	ID new_id{};
+
+	// calc size, we are limited by the tox max packet size
+	const size_t peer_key_size = c_vec.size() * ToxKey{}.size();
+	// size currently same for friend and group
+	const size_t init_w_h_pkg_size = 1+1+new_id.size()+sizeof(uint16_t)+peer_key_size+initial_state_user_data.size;
+	//TOX_MAX_CUSTOM_PACKET_SIZE // 1373
+	//TOX_GROUP_MAX_MESSAGE_LENGTH // 1372
+	if (init_w_h_pkg_size > 1372u) {
+		std::cerr << "TP2PRNG error: failed to generate and hmac from is\n";
+		assert(false && "initial state exeeds max size");
+		return {};
+	}
+
+	// after size check
+	randombytes(new_id.data(), new_id.size());
+
+	// TODO: sanity check all contacts are either friend or group exclusively
+
+	RngState& new_rng_state = _global_map[new_id];
+	new_rng_state.initial_state = std::vector<uint8_t>(initial_state_user_data.cbegin(), initial_state_user_data.cend());
+	new_rng_state.contacts = c_vec;
+	new_rng_state.fillInitalStatePreamble(ByteSpan{new_id}); // could be faster if we used peer_keys directly
+
+	auto self = new_rng_state.getSelf();
+	if (!static_cast<bool>(self)) {
+		std::cerr << "TP2PRNG error: failed to find self in new gen\n";
+		_global_map.erase(new_id);
+		return {};
+	}
+
+	std::vector<uint8_t> gen_initial_state = new_rng_state.initial_state_preamble;
+	gen_initial_state.insert(gen_initial_state.cend(), initial_state_user_data.cbegin(), initial_state_user_data.cend());
+
+	std::array<uint8_t, P2PRNG_MAC_LEN> hmac;
+	std::array<uint8_t, P2PRNG_LEN + P2PRNG_MAC_KEY_LEN> secret;
+	if (p2prng_gen_and_auth(secret.data(), secret.data()+P2PRNG_LEN, hmac.data(), gen_initial_state.data(), gen_initial_state.size()) != 0) {
+		std::cerr << "TP2PRNG error: failed to generate and hmac from is\n";
+		_global_map.erase(new_id);
+		return {};
+	}
+
+	new_rng_state.hmacs[self] = hmac;
+	new_rng_state.secrets[self] = secret;
+
+	// fire init event?
+	dispatch(
+		P2PRNG_Event::init,
+		P2PRNG::Events::Init{
+			ByteSpan{new_id},
+			true,
+			initial_state_user_data,
+		}
+	);
+
+	// TODO: queue
+	// TODO: record result
+	for (const auto peer : new_rng_state.contacts) {
+		if (peer.all_of<Contact::Components::TagSelfStrong>()) {
+			continue; // skip self
+		}
+		// TODO: record send success
+		send_init_with_hmac(peer, ByteSpan{new_id}, new_rng_state.contacts, initial_state_user_data, ByteSpan{hmac});
+	}
+
+	// fire hmac event
+	dispatch(
+		P2PRNG_Event::hmac,
+		P2PRNG::Events::HMAC{
+			ByteSpan{new_id},
+			static_cast<uint16_t>(new_rng_state.hmacs.size()),
+			static_cast<uint16_t>(new_rng_state.contacts.size()),
+		}
+	);
+
+	return std::vector<uint8_t>(new_id.cbegin(), new_id.cend());
 }
 
 P2PRNG::State ToxP2PRNG::getSate(const ByteSpan id_bytes) {
@@ -425,11 +511,11 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 	}
 
 	if (data.size - curser <= 0) {
-		std::cerr << "TP2PRNG error: packet too small, missing inital_state\n";
+		std::cerr << "TP2PRNG error: packet too small, missing initial_state\n";
 		return false;
 	}
 
-	const ByteSpan inital_state {data.ptr + curser, data.size - curser};
+	const ByteSpan initial_state {data.ptr + curser, data.size - curser};
 
 	// lets check if id already exists (after parse, so they cant cheap out)
 	if (const auto* rng_state = getRngSate(c, id); rng_state != nullptr) {
@@ -497,7 +583,7 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 	}
 
 	RngState& new_rng_state = _global_map[new_gen_id];
-	new_rng_state.inital_state = std::vector<uint8_t>(inital_state.cbegin(), inital_state.cend());
+	new_rng_state.initial_state = std::vector<uint8_t>(initial_state.cbegin(), initial_state.cend());
 	new_rng_state.contacts = std::move(peer_contacts);
 	new_rng_state.fillInitalStatePreamble(id); // could be faster if we used peer_keys directly
 
@@ -508,12 +594,12 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 		return true;
 	}
 
-	std::vector<uint8_t> gen_inital_state = new_rng_state.inital_state_preamble;
-	gen_inital_state.insert(gen_inital_state.cend(), inital_state.cbegin(), inital_state.cend());
+	std::vector<uint8_t> gen_initial_state = new_rng_state.initial_state_preamble;
+	gen_initial_state.insert(gen_initial_state.cend(), initial_state.cbegin(), initial_state.cend());
 
 	std::array<uint8_t, P2PRNG_MAC_LEN> hmac;
 	std::array<uint8_t, P2PRNG_LEN + P2PRNG_MAC_KEY_LEN> secret;
-	if (p2prng_gen_and_auth(secret.data(), secret.data()+P2PRNG_LEN, hmac.data(), gen_inital_state.data(), gen_inital_state.size()) != 0) {
+	if (p2prng_gen_and_auth(secret.data(), secret.data()+P2PRNG_LEN, hmac.data(), gen_initial_state.data(), gen_initial_state.size()) != 0) {
 		std::cerr << "TP2PRNG error: failed to generate and hmac from is\n";
 		_global_map.erase(new_gen_id);
 		return true;
@@ -528,7 +614,7 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 		P2PRNG::Events::Init{
 			id,
 			false,
-			inital_state,
+			initial_state,
 		}
 	);
 
@@ -813,7 +899,7 @@ bool ToxP2PRNG::send_init_with_hmac(
 	Contact3Handle c,
 	const ByteSpan id,
 	const std::vector<Contact3Handle>& peers,
-	const ByteSpan inital_state,
+	const ByteSpan initial_state,
 	const ByteSpan hmac
 ) {
 	auto [pkg, tfe, tgpe] = prepSendPkgWithID(c, PKG::INIT_WITH_HMAC, id);
@@ -850,7 +936,7 @@ bool ToxP2PRNG::send_init_with_hmac(
 	pkg.insert(pkg.cend(), hmac.cbegin(), hmac.cend());
 
 	//   - is
-	pkg.insert(pkg.cend(), inital_state.cbegin(), inital_state.cend());
+	pkg.insert(pkg.cend(), initial_state.cbegin(), initial_state.cend());
 
 	std::cout << "TP2PRNG: seding INIT_WITH_HMAC s:" << pkg.size() << "\n";
 
