@@ -3,6 +3,7 @@
 #include <solanaceae/contact/components.hpp>
 #include <solanaceae/tox_contacts/components.hpp>
 #include <solanaceae/toxcore/tox_interface.hpp>
+#include <solanaceae/util/utils.hpp>
 
 #include <sodium.h>
 
@@ -124,6 +125,8 @@ void ToxP2PRNG::RngState::genFinalResult(void) {
 		}
 	}
 	// we done
+
+	std::cout << "TP2PRNG: final rng: " << bin2hex(final_result) << "\n";
 }
 
 P2PRNG::State ToxP2PRNG::RngState::getState(void) const {
@@ -510,6 +513,14 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 		}
 	}
 
+	// then the senders hmac
+	if (data.size - curser <= P2PRNG_MAC_LEN) {
+		std::cerr << "TP2PRNG error: packet too small, missing hmac and initial_state\n";
+		return false;
+	}
+	const ByteSpan sender_hmac {data.ptr + curser, P2PRNG_MAC_LEN};
+	curser += P2PRNG_MAC_LEN;
+
 	if (data.size - curser <= 0) {
 		std::cerr << "TP2PRNG error: packet too small, missing initial_state\n";
 		return false;
@@ -608,6 +619,13 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 	new_rng_state.hmacs[self] = hmac;
 	new_rng_state.secrets[self] = secret;
 
+	{ // sender hmac
+		auto& hmac_entry = new_rng_state.hmacs[c];
+		for (size_t i = 0; i < hmac_entry.size(); i++) {
+			hmac_entry[i] = sender_hmac[i];
+		}
+	}
+
 	// fire init event?
 	dispatch(
 		P2PRNG_Event::init,
@@ -662,8 +680,9 @@ bool ToxP2PRNG::handle_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) 
 
 	// check if preexisting (do nothing)
 	auto hmac_it = rng_state->hmacs.find(c);
-	if (hmac_it == rng_state->hmacs.cend()) {
+	if (hmac_it != rng_state->hmacs.cend()) {
 		// preexisting
+		std::cerr << "TP2PRNG warning: HMAC pkg has HMAC we already had!\n";
 		return false;
 	}
 
@@ -747,8 +766,9 @@ bool ToxP2PRNG::handle_secret(Contact3Handle c, const ByteSpan id, ByteSpan data
 
 	// check if preexisting (do nothing)
 	auto secret_it = rng_state->secrets.find(c);
-	if (secret_it == rng_state->secrets.cend()) {
+	if (secret_it != rng_state->secrets.cend()) {
 		// preexisting
+		std::cerr << "TP2PRNG warning: SECRET pkg has Secret we already had!\n";
 		return true; // mark handled
 	}
 
@@ -775,6 +795,8 @@ bool ToxP2PRNG::handle_secret(Contact3Handle c, const ByteSpan id, ByteSpan data
 					c,
 				}
 			);
+
+			return true;
 		}
 	}
 
@@ -938,7 +960,7 @@ bool ToxP2PRNG::send_init_with_hmac(
 	//   - is
 	pkg.insert(pkg.cend(), initial_state.cbegin(), initial_state.cend());
 
-	std::cout << "TP2PRNG: seding INIT_WITH_HMAC s:" << pkg.size() << "\n";
+	std::cout << "TP2PRNG: sending INIT_WITH_HMAC s:" << pkg.size() << "\n";
 
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
@@ -952,6 +974,8 @@ bool ToxP2PRNG::send_hmac(Contact3Handle c, ByteSpan id, const ByteSpan hmac) {
 	//   - hmac
 	pkg.insert(pkg.cend(), hmac.cbegin(), hmac.cend());
 
+	std::cout << "TP2PRNG: sending HMAC\n";
+
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
 
@@ -960,6 +984,8 @@ bool ToxP2PRNG::send_hmac_request(Contact3Handle c, ByteSpan id) {
 	if (pkg.empty()) {
 		return false;
 	}
+
+	std::cout << "TP2PRNG: sending HMAC_REQUEST\n";
 
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
@@ -973,6 +999,8 @@ bool ToxP2PRNG::send_secret(Contact3Handle c, ByteSpan id, const ByteSpan secret
 	//   - secret (msg+k)
 	pkg.insert(pkg.cend(), secret.cbegin(), secret.cend());
 
+	std::cout << "TP2PRNG: sending SECRET\n";
+
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
 
@@ -981,6 +1009,8 @@ bool ToxP2PRNG::send_secret_request(Contact3Handle c, ByteSpan id) {
 	if (pkg.empty()) {
 		return false;
 	}
+
+	std::cout << "TP2PRNG: sending SECRET_REQUEST\n";
 
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
@@ -1006,6 +1036,7 @@ ToxP2PRNG::RngState* ToxP2PRNG::getRngSate(Contact3Handle c, ByteSpan id_bytes) 
 	const auto find_c = std::find(find_it->second.contacts.cbegin(), find_it->second.contacts.cend(), c);
 	if (find_c == find_it->second.contacts.cend()) {
 		// id exists, but peer looking into id is not participating, so we block the request
+		std::cerr << "!!!!! id exists, but peer looking into id is not participating\n";
 		return nullptr;
 	}
 
