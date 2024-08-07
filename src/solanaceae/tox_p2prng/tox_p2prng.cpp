@@ -636,9 +636,14 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 		}
 	);
 
-	// TODO: queue
-	// TODO: record result
-	send_hmac(c, id, ByteSpan{hmac});
+	for (const auto peer : new_rng_state.contacts) {
+		if (peer.all_of<Contact::Components::TagSelfStrong>()) {
+			continue; // skip self
+		}
+		// TODO: queue
+		// TODO: record send success
+		send_hmac(peer, id, ByteSpan{hmac});
+	}
 
 	// fire hmac event
 	dispatch(
