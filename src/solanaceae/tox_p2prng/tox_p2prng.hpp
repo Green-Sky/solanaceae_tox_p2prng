@@ -16,7 +16,7 @@
 // TODO: use generic packet handling service (eg ngc_ext) instead
 class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 	ToxI& _t;
-	ToxEventProviderI& _tep;
+	ToxEventProviderI::SubscriptionReference _tep_sr;
 	ToxContactModel2& _tcm;
 
 	public:

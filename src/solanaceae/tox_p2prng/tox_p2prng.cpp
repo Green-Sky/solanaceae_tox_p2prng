@@ -259,10 +259,12 @@ ToxP2PRNG::ToxP2PRNG(
 	ToxI& t,
 	ToxEventProviderI& tep,
 	ToxContactModel2& tcm
-) : _t(t), _tep(tep), _tcm(tcm) {
-	_tep.subscribe(this, Tox_Event_Type::TOX_EVENT_FRIEND_LOSSLESS_PACKET);
-	_tep.subscribe(this, Tox_Event_Type::TOX_EVENT_GROUP_CUSTOM_PACKET);
-	_tep.subscribe(this, Tox_Event_Type::TOX_EVENT_GROUP_CUSTOM_PRIVATE_PACKET);
+) : _t(t), _tep_sr(tep.newSubRef(this)), _tcm(tcm) {
+	_tep_sr
+		.subscribe(Tox_Event_Type::TOX_EVENT_FRIEND_LOSSLESS_PACKET)
+		.subscribe(Tox_Event_Type::TOX_EVENT_GROUP_CUSTOM_PACKET)
+		.subscribe(Tox_Event_Type::TOX_EVENT_GROUP_CUSTOM_PRIVATE_PACKET)
+	;
 }
 
 ToxP2PRNG::~ToxP2PRNG(void) {
