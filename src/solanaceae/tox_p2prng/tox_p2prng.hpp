@@ -36,8 +36,8 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 	private:
 		struct RngState {
 			// all contacts participating, including self
-			std::vector<Contact3Handle> contacts;
-			Contact3Handle getSelf(void) const;
+			std::vector<ContactHandle4> contacts;
+			ContactHandle4 getSelf(void) const;
 
 			// app given
 			std::vector<uint8_t> initial_state;
@@ -49,8 +49,8 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 			void fillInitalStatePreamble(const ByteSpan id);
 
 			// use contacts instead?
-			entt::dense_map<Contact3, std::array<uint8_t, P2PRNG_MAC_LEN>> hmacs;
-			entt::dense_map<Contact3, std::array<uint8_t, P2PRNG_LEN + P2PRNG_MAC_KEY_LEN>> secrets;
+			entt::dense_map<Contact4, std::array<uint8_t, P2PRNG_MAC_LEN>> hmacs;
+			entt::dense_map<Contact4, std::array<uint8_t, P2PRNG_LEN + P2PRNG_MAC_KEY_LEN>> secrets;
 
 			void genFinalResult(void);
 
@@ -72,15 +72,15 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 		~ToxP2PRNG(void);
 
 	public: // p2prng
-		std::vector<uint8_t> newGernation(Contact3Handle c, const ByteSpan initial_state_user_data) override;
-		std::vector<uint8_t> newGernationPeers(const std::vector<Contact3Handle>& c_vec, const ByteSpan initial_state_user_data) override;
+		std::vector<uint8_t> newGernation(ContactHandle4 c, const ByteSpan initial_state_user_data) override;
+		std::vector<uint8_t> newGernationPeers(const std::vector<ContactHandle4>& c_vec, const ByteSpan initial_state_user_data) override;
 
 		P2PRNG::State getSate(const ByteSpan id) override;
 		ByteSpan getResult(const ByteSpan id) override;
 
 	protected:
 		bool handlePacket(
-			Contact3Handle c,
+			ContactHandle4 c,
 			PKG pkg_type,
 			ByteSpan data
 		);
@@ -96,42 +96,43 @@ class ToxP2PRNG : public P2PRNGI, public ToxEventI {
 			const bool _private
 		);
 
-		bool handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data);
-		bool handle_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data);
-		bool handle_hmac_request(Contact3Handle c, const ByteSpan id, ByteSpan data);
-		bool handle_secret(Contact3Handle c, const ByteSpan id, ByteSpan data);
-		bool handle_secret_request(Contact3Handle c, const ByteSpan id, ByteSpan data);
+		bool handle_init_with_hmac(ContactHandle4 c, const ByteSpan id, ByteSpan data);
+		bool handle_hmac(ContactHandle4 c, const ByteSpan id, ByteSpan data);
+		bool handle_hmac_request(ContactHandle4 c, const ByteSpan id, ByteSpan data);
+		bool handle_secret(ContactHandle4 c, const ByteSpan id, ByteSpan data);
+		bool handle_secret_request(ContactHandle4 c, const ByteSpan id, ByteSpan data);
 
 		bool send_init_with_hmac(
-			Contact3Handle c,
+			ContactHandle4 c,
 			const ByteSpan id,
-			const std::vector<Contact3Handle>& peers,
+			const std::vector<ContactHandle4>& peers,
 			const ByteSpan initial_state,
 			const ByteSpan hmac
 		);
 		bool send_hmac(
-			Contact3Handle c,
+			ContactHandle4 c,
 			const ByteSpan id,
 			const ByteSpan hmac
 		);
 		bool send_hmac_request(
-			Contact3Handle c,
+			ContactHandle4 c,
 			const ByteSpan id
 		);
 		bool send_secret(
-			Contact3Handle c,
+			ContactHandle4 c,
 			const ByteSpan id,
 			const ByteSpan secret
 		);
 		bool send_secret_request(
-			Contact3Handle c,
+			ContactHandle4 c,
 			const ByteSpan id
 		);
 
-		RngState* getRngSate(Contact3Handle c, ByteSpan id);
+		RngState* getRngSate(ContactHandle4 c, ByteSpan id);
 
 	protected:
 		bool onToxEvent(const Tox_Event_Friend_Lossless_Packet* e) override;
 		bool onToxEvent(const Tox_Event_Group_Custom_Packet* e) override;
 		bool onToxEvent(const Tox_Event_Group_Custom_Private_Packet* e) override;
 };
+

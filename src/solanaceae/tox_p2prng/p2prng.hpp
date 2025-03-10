@@ -1,6 +1,6 @@
 #pragma once
 
-#include <solanaceae/contact/contact_model3.hpp>
+#include <solanaceae/contact/fwd.hpp>
 #include <solanaceae/util/event_provider.hpp>
 #include <solanaceae/util/span.hpp>
 
@@ -98,7 +98,7 @@ namespace P2PRNG::Events {
 	// fired when a secret does not match the hmac
 	struct ValError {
 		const ByteSpan id;
-		Contact3 c;
+		Contact4 c;
 		// TODO: more info?
 	};
 
@@ -136,9 +136,9 @@ struct P2PRNGI : public P2PRNGEventProviderI {
 
 	// returns unique id, you can then use when listen to events
 	// chooses peers depending on C, if C is a group it (tries?) to use everyone?
-	virtual std::vector<uint8_t> newGernation(Contact3Handle c, const ByteSpan initial_state_user_data) = 0;
+	virtual std::vector<uint8_t> newGernation(ContactHandle4 c, const ByteSpan initial_state_user_data) = 0;
 	// manually tell it which peers to use
-	virtual std::vector<uint8_t> newGernationPeers(const std::vector<Contact3Handle>& c_vec, const ByteSpan initial_state_user_data) = 0;
+	virtual std::vector<uint8_t> newGernationPeers(const std::vector<ContactHandle4>& c_vec, const ByteSpan initial_state_user_data) = 0;
 
 
 	// TODO: do we really need this, or are event enough??

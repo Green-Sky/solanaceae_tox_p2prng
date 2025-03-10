@@ -5,6 +5,9 @@
 #include <solanaceae/toxcore/tox_interface.hpp>
 #include <solanaceae/util/utils.hpp>
 
+#include <entt/entity/registry.hpp>
+#include <entt/entity/handle.hpp>
+
 #include <sodium.h>
 
 #include <iostream>
@@ -38,7 +41,7 @@
 #define TOX_PKG_ID_FRIEND 0xB1
 #define TOX_PKG_ID_GROUP 0xa6
 
-Contact3Handle ToxP2PRNG::RngState::getSelf(void) const {
+ContactHandle4 ToxP2PRNG::RngState::getSelf(void) const {
 	for (auto c : contacts) {
 		if (c.all_of<Contact::Components::TagSelfStrong>()) {
 			return c;
@@ -168,7 +171,7 @@ void ToxP2PRNG::checkHaveAllHMACs(RngState* rng_state, const ByteSpan id) {
 	// we should also validate any secret that already is in storage
 
 	// validate existing (self should be good)
-	std::vector<Contact3> bad_secrets;
+	std::vector<Contact4> bad_secrets;
 	for (const auto& [pre_c, secret] : rng_state->secrets) {
 		const auto& pre_hmac = rng_state->hmacs.at(pre_c);
 		if (p2prng_auth_verify(secret.data()+P2PRNG_LEN, pre_hmac.data(), secret.data(), P2PRNG_LEN) != 0) {
@@ -194,7 +197,7 @@ void ToxP2PRNG::checkHaveAllHMACs(RngState* rng_state, const ByteSpan id) {
 	}
 
 	// find self contact
-	Contact3Handle self = rng_state->getSelf();
+	ContactHandle4 self = rng_state->getSelf();
 	if (!static_cast<bool>(self)) {
 		std::cerr << "TP2PRNG error: failed to look up self\n";
 		return;
@@ -270,13 +273,13 @@ ToxP2PRNG::ToxP2PRNG(
 ToxP2PRNG::~ToxP2PRNG(void) {
 }
 
-std::vector<uint8_t> ToxP2PRNG::newGernation(Contact3Handle c, const ByteSpan initial_state_user_data) {
+std::vector<uint8_t> ToxP2PRNG::newGernation(ContactHandle4 c, const ByteSpan initial_state_user_data) {
 	(void)c;
 	(void)initial_state_user_data;
 	return {};
 }
 
-std::vector<uint8_t> ToxP2PRNG::newGernationPeers(const std::vector<Contact3Handle>& c_vec, const ByteSpan initial_state_user_data) {
+std::vector<uint8_t> ToxP2PRNG::newGernationPeers(const std::vector<ContactHandle4>& c_vec, const ByteSpan initial_state_user_data) {
 	if (initial_state_user_data.empty()) {
 		return {};
 	}
@@ -402,7 +405,7 @@ ByteSpan ToxP2PRNG::getResult(const ByteSpan id_bytes) {
 }
 
 bool ToxP2PRNG::handlePacket(
-	Contact3Handle c,
+	ContactHandle4 c,
 	PKG pkg_type,
 	ByteSpan data
 ) {
@@ -486,7 +489,7 @@ bool ToxP2PRNG::handleGroupPacket(
 
 #define _DATA_HAVE(x, error) if ((data.size - curser) < (x)) { error; }
 
-bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_init_with_hmac(ContactHandle4 c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet INIT_WITH_HMAC\n";
 
 	if (data.size  < sizeof(uint16_t) + ToxKey{}.size() + 1) {
@@ -553,7 +556,7 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 
 	// else, its new
 	// first resolve peer keys to contacts
-	std::vector<Contact3Handle> peer_contacts;
+	std::vector<ContactHandle4> peer_contacts;
 	if (c.all_of<Contact::Components::ToxFriendEphemeral>()) {
 		// assuming a 1to1 can only have 2 peers
 		assert(peers.size() == 2);
@@ -561,7 +564,7 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 			// TODO: accel lookup
 			for (const auto& [find_c, tfp] : c.registry()->view<Contact::Components::ToxFriendPersistent>().each()) {
 				if (tfp.key == peer_key) {
-					peer_contacts.push_back(Contact3Handle{*c.registry(), find_c});
+					peer_contacts.push_back(ContactHandle4{*c.registry(), find_c});
 					break;
 				}
 			}
@@ -575,7 +578,7 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 			// TODO: accel lookup
 			for (const auto& [find_c, tgpp] : c.registry()->view<Contact::Components::ToxGroupPeerPersistent>().each()) {
 				if (tgpp.peer_key == peer_key) {
-					peer_contacts.push_back(Contact3Handle{*c.registry(), find_c});
+					peer_contacts.push_back(ContactHandle4{*c.registry(), find_c});
 					break;
 				}
 			}
@@ -666,7 +669,7 @@ bool ToxP2PRNG::handle_init_with_hmac(Contact3Handle c, const ByteSpan id, ByteS
 	return true;
 }
 
-bool ToxP2PRNG::handle_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_hmac(ContactHandle4 c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet HMAC\n";
 
 	if (data.size < P2PRNG_MAC_LEN) {
@@ -719,7 +722,7 @@ bool ToxP2PRNG::handle_hmac(Contact3Handle c, const ByteSpan id, ByteSpan data) 
 	return true;
 }
 
-bool ToxP2PRNG::handle_hmac_request(Contact3Handle c, const ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_hmac_request(ContactHandle4 c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet HMAC_REQUEST\n";
 
 	if (!data.empty()) {
@@ -734,7 +737,7 @@ bool ToxP2PRNG::handle_hmac_request(Contact3Handle c, const ByteSpan id, ByteSpa
 	// no state check necessary
 
 	// find self contact
-	Contact3Handle self = rng_state->getSelf();
+	ContactHandle4 self = rng_state->getSelf();
 
 	if (!static_cast<bool>(self)) {
 		std::cerr << "TP2PRNG error: failed to look up self\n";
@@ -754,7 +757,7 @@ bool ToxP2PRNG::handle_hmac_request(Contact3Handle c, const ByteSpan id, ByteSpa
 	return false;
 }
 
-bool ToxP2PRNG::handle_secret(Contact3Handle c, const ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_secret(ContactHandle4 c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet SECRET\n";
 
 	if (data.size < P2PRNG_LEN + P2PRNG_MAC_KEY_LEN) {
@@ -835,7 +838,7 @@ bool ToxP2PRNG::handle_secret(Contact3Handle c, const ByteSpan id, ByteSpan data
 	return true;
 }
 
-bool ToxP2PRNG::handle_secret_request(Contact3Handle c, const ByteSpan id, ByteSpan data) {
+bool ToxP2PRNG::handle_secret_request(ContactHandle4 c, const ByteSpan id, ByteSpan data) {
 	std::cerr << "TP2PRNG: got packet SECRET_REQUEST\n";
 
 	if (!data.empty()) {
@@ -853,7 +856,7 @@ bool ToxP2PRNG::handle_secret_request(Contact3Handle c, const ByteSpan id, ByteS
 	}
 
 	// find self contact
-	Contact3Handle self = rng_state->getSelf();
+	ContactHandle4 self = rng_state->getSelf();
 
 	if (!static_cast<bool>(self)) {
 		std::cerr << "TP2PRNG error: failed to look up self\n";
@@ -875,7 +878,7 @@ bool ToxP2PRNG::handle_secret_request(Contact3Handle c, const ByteSpan id, ByteS
 	return true;
 }
 
-static std::tuple<std::vector<uint8_t>, const Contact::Components::ToxFriendEphemeral*, const Contact::Components::ToxGroupPeerEphemeral*> prepSendPkgWithID(Contact3Handle c, ToxP2PRNG::PKG pkg_type, ByteSpan id) {
+static std::tuple<std::vector<uint8_t>, const Contact::Components::ToxFriendEphemeral*, const Contact::Components::ToxGroupPeerEphemeral*> prepSendPkgWithID(ContactHandle4 c, ToxP2PRNG::PKG pkg_type, ByteSpan id) {
 	std::vector<uint8_t> pkg;
 
 	// determine friend or group (meh)
@@ -925,9 +928,9 @@ static bool sendToxPrivatePacket(
 }
 
 bool ToxP2PRNG::send_init_with_hmac(
-	Contact3Handle c,
+	ContactHandle4 c,
 	const ByteSpan id,
-	const std::vector<Contact3Handle>& peers,
+	const std::vector<ContactHandle4>& peers,
 	const ByteSpan initial_state,
 	const ByteSpan hmac
 ) {
@@ -972,7 +975,7 @@ bool ToxP2PRNG::send_init_with_hmac(
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
 
-bool ToxP2PRNG::send_hmac(Contact3Handle c, ByteSpan id, const ByteSpan hmac) {
+bool ToxP2PRNG::send_hmac(ContactHandle4 c, ByteSpan id, const ByteSpan hmac) {
 	auto [pkg, tfe, tgpe] = prepSendPkgWithID(c, PKG::HMAC, id);
 	if (pkg.empty()) {
 		return false;
@@ -986,7 +989,7 @@ bool ToxP2PRNG::send_hmac(Contact3Handle c, ByteSpan id, const ByteSpan hmac) {
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
 
-bool ToxP2PRNG::send_hmac_request(Contact3Handle c, ByteSpan id) {
+bool ToxP2PRNG::send_hmac_request(ContactHandle4 c, ByteSpan id) {
 	auto [pkg, tfe, tgpe] = prepSendPkgWithID(c, PKG::HMAC_REQUEST, id);
 	if (pkg.empty()) {
 		return false;
@@ -997,7 +1000,7 @@ bool ToxP2PRNG::send_hmac_request(Contact3Handle c, ByteSpan id) {
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
 
-bool ToxP2PRNG::send_secret(Contact3Handle c, ByteSpan id, const ByteSpan secret) {
+bool ToxP2PRNG::send_secret(ContactHandle4 c, ByteSpan id, const ByteSpan secret) {
 	auto [pkg, tfe, tgpe] = prepSendPkgWithID(c, PKG::SECRET, id);
 	if (pkg.empty()) {
 		return false;
@@ -1011,7 +1014,7 @@ bool ToxP2PRNG::send_secret(Contact3Handle c, ByteSpan id, const ByteSpan secret
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
 
-bool ToxP2PRNG::send_secret_request(Contact3Handle c, ByteSpan id) {
+bool ToxP2PRNG::send_secret_request(ContactHandle4 c, ByteSpan id) {
 	auto [pkg, tfe, tgpe] = prepSendPkgWithID(c, PKG::SECRET_REQUEST, id);
 	if (pkg.empty()) {
 		return false;
@@ -1022,7 +1025,7 @@ bool ToxP2PRNG::send_secret_request(Contact3Handle c, ByteSpan id) {
 	return sendToxPrivatePacket(_t, tfe, tgpe, pkg);
 }
 
-ToxP2PRNG::RngState* ToxP2PRNG::getRngSate(Contact3Handle c, ByteSpan id_bytes) {
+ToxP2PRNG::RngState* ToxP2PRNG::getRngSate(ContactHandle4 c, ByteSpan id_bytes) {
 	if (id_bytes.size != ID{}.size()) {
 		return nullptr;
 	}
