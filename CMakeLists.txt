@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24 FATAL_ERROR)
 
 # cmake setup begin
-project(solanaceae_message_fragment_store)
+project(solanaceae_tox_p2prng)
 
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 	set(SOLANACEAE_TOX_P2PRNG_STANDALONE ON)
