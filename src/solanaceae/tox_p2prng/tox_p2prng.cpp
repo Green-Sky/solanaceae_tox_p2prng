@@ -702,6 +702,23 @@ bool ToxP2PRNG::handle_hmac(ContactHandle4 c, const ByteSpan id, ByteSpan data) 
 		hmac_record[i] = hmac[i];
 	}
 
+	auto secret_it = rng_state->secrets.find(c);
+	if (secret_it != rng_state->secrets.cend()) {
+		const ByteSpan msg {secret_it->second.data(), P2PRNG_LEN};
+		const ByteSpan key {secret_it->second.data() + P2PRNG_LEN, P2PRNG_MAC_KEY_LEN};
+		if (p2prng_auth_verify(key.ptr, hmac_record.data(), msg.ptr, msg.size) != 0) {
+			std::cerr << "TP2PRNG error: stored secret invalid for arriving HMAC!\n";
+			rng_state->secrets.erase(secret_it);
+			dispatch(
+				P2PRNG_Event::val_error,
+				P2PRNG::Events::ValError{
+					id,
+					c,
+				}
+			);
+		}
+	}
+
 	// fire update event
 	dispatch(
 		P2PRNG_Event::hmac,
